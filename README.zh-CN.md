@@ -62,11 +62,11 @@ source ~/.bashrc  # 或 source ~/.zshrc
 ## 用法
 
 ```
-ccs save <name>     保存当前登录的账号
-ccs <name>          切换到指定账号（自动保存当前状态）
+ccs save <n>     保存当前登录的账号
+ccs <n>          切换到指定账号（自动保存当前状态）
 ccs list            列出所有已保存的账号
 ccs status          查看当前使用的账号
-ccs delete <name>   删除一个已保存的账号
+ccs delete <n>   删除一个已保存的账号
 ```
 
 另附 `clauded`，等同于 `claude --dangerously-skip-permissions`：
@@ -86,7 +86,7 @@ ccs save personal    # 保存当前账号为 personal
 ccs personal         # 切换到 personal（自动保存 work 的状态）
 ccs work             # 切换回 work
 
-ccs list             # 列出所有账号
+ccs list             # 列出所有账号（* 标记当前账号）
 ccs status           # 查看当前账号
 ccs delete personal  # 删除 personal
 ```
@@ -99,10 +99,23 @@ ccs delete personal  # 删除 personal
 
 | 文件 | 说明 |
 |------|------|
-| `<name>.json` | `~/.claude.json` 的副本（登录 token） |
-| `<name>-dir/` | `~/.claude/` 目录的副本（配置、项目数据） |
+| `<n>.json` | `~/.claude.json` 的副本（登录 token） |
+| `<n>-dir/` | `~/.claude/` 目录的副本（配置、项目数据） |
+| `.current` | 当前活跃账号的名称 |
 
-切换账号时，先将当前账号状态同步到备份，再还原目标账号的文件。
+`.current` 文件是可靠自动保存的关键。切换账号时，ccs 通过读取 `.current` 来知道要更新哪个备份——即使 token 在上次保存后已经刷新，也能正确工作。
+
+---
+
+## 从旧版本升级
+
+如果你使用的是旧版本（通过文件哈希匹配来识别当前账号），升级后需要执行一次重新保存：
+
+```bash
+ccs save <你的账号名>
+```
+
+这会写入 `.current` 标记，之后一切正常工作。
 
 ---
 

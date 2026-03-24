@@ -63,11 +63,11 @@ source ~/.bashrc  # or: source ~/.zshrc
 ## Usage
 
 ```
-ccs save <name>     Save the current account
-ccs <name>          Switch to an account (auto-saves current)
+ccs save <n>     Save the current account
+ccs <n>          Switch to an account (auto-saves current)
 ccs list            List all saved accounts
 ccs status          Show the current account
-ccs delete <name>   Delete a saved account
+ccs delete <n>   Delete a saved account
 ```
 
 `clauded` is a shortcut for `claude --dangerously-skip-permissions`:
@@ -87,7 +87,7 @@ ccs save personal    # save current session as "personal"
 ccs personal         # switch to personal (auto-saves work first)
 ccs work             # switch back to work
 
-ccs list             # list all accounts
+ccs list             # list all accounts (* marks the current one)
 ccs status           # show current account
 ccs delete personal  # delete personal
 ```
@@ -100,10 +100,23 @@ Account data is stored in `~/.claude-accounts/` (Windows: `%USERPROFILE%\.claude
 
 | File | Description |
 |------|-------------|
-| `<name>.json` | Copy of `~/.claude.json` (login token) |
-| `<name>-dir/` | Copy of `~/.claude/` directory (config & project data) |
+| `<n>.json` | Copy of `~/.claude.json` (login token) |
+| `<n>-dir/` | Copy of `~/.claude/` directory (config & project data) |
+| `.current` | Name of the currently active account |
 
-On switch, the current account is synced to its backup before the target is restored.
+The `.current` file is the key to reliable auto-save. When switching accounts, ccs reads `.current` to know which backup to update — even if the token has been refreshed since the last save.
+
+---
+
+## Upgrading from an older version
+
+If you used a previous version (which used file-hash matching instead of `.current`), run a one-time re-save after upgrading:
+
+```bash
+ccs save <your-account-name>
+```
+
+This writes the `.current` marker and everything will work correctly from then on.
 
 ---
 
