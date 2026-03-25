@@ -117,9 +117,10 @@ json.dump(cred, open(sys.argv[1], 'w'), indent=2)
                     fi
                     echo "    OK"
                 else
-                    local err; err=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_description', d.get('error','unknown')))" 2>/dev/null)
+                    local err; err=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error',{}); print(e.get('message',e) if isinstance(e,dict) else e)" 2>/dev/null)
                     echo "    FAILED: $err"
                 fi
+                sleep 2  # avoid rate limiting between accounts
             done
 
             # Refresh live credentials if not covered by any backup
@@ -199,21 +200,9 @@ json.dump(cred, open(sys.argv[1], 'w'), indent=2)
             echo "  Note: account backups in '$HOME/.claude-accounts/' were kept."
             echo "  Delete that folder manually if you no longer need them."
             ;;
-        "")
-            echo ""
-            echo "  ccs save <n>       Save current account"
-            echo "  ccs <n>            Switch to account"
-            echo "  ccs list           List accounts"
-            echo "  ccs status         Show current account"
-            echo "  ccs refresh        Refresh OAuth tokens for all accounts"
-            echo "  ccs schedule       Register hourly auto-refresh (cron)"
-            echo "  ccs unschedule     Remove the auto-refresh cron job"
-            echo "  ccs delete <n>     Delete a saved account"
-            echo "  ccs uninstall      Uninstall ccs"
-            echo ""
-            ;;
-        *)
-            local target="$command"
+        switch)
+            [ -z "$name" ] && echo "Usage: ccs switch <n>" && return 1
+            local target="$name"
             local cur; cur=$(_get_current)
             if [ "$cur" = "$target" ]; then
                 echo "Already on '$target'"
@@ -233,6 +222,22 @@ json.dump(cred, open(sys.argv[1], 'w'), indent=2)
             fi
             _set_current "$target"
             echo "Switched to '$target'"
+            ;;
+        "")
+            echo ""
+            echo "  ccs save <n>       Save current account"
+            echo "  ccs switch <n>     Switch to account"
+            echo "  ccs list           List accounts"
+            echo "  ccs status         Show current account"
+            echo "  ccs refresh        Refresh OAuth tokens for all accounts"
+            echo "  ccs schedule       Register hourly auto-refresh (cron)"
+            echo "  ccs unschedule     Remove the auto-refresh cron job"
+            echo "  ccs delete <n>     Delete a saved account"
+            echo "  ccs uninstall      Uninstall ccs"
+            echo ""
+            ;;
+        *)
+            echo "Unknown command: '$command'. Run 'ccs' for usage."
             ;;
     esac
 }

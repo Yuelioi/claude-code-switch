@@ -63,7 +63,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 
 ```
 ccs save <name>      保存当前登录的账号
-ccs <name>           切换到指定账号（自动保存当前状态）
+ccs switch <name>    切换到指定账号（自动保存当前状态）
 ccs list             列出所有已保存的账号
 ccs status           查看当前使用的账号
 ccs refresh          刷新所有已保存账号的 OAuth token
@@ -87,8 +87,8 @@ clauded [args]
 ccs save work        # 保存当前账号为 work
 ccs save personal    # 保存当前账号为 personal
 
-ccs personal         # 切换到 personal（自动保存 work 的状态）
-ccs work             # 切换回 work
+ccs switch personal  # 切换到 personal（自动保存 work 的状态）
+ccs switch work      # 切换回 work
 
 ccs list             # 列出所有账号（* 标记当前账号）
 ccs status           # 查看当前账号

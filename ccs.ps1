@@ -11,8 +11,8 @@ function ccs {
 
     if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Path $BackupDir | Out-Null }
 
-    function _GetCurrent { if (Test-Path $CurrentFile) { (Get-Content $CurrentFile -Raw).Trim() } else { $null } }
-    function _SetCurrent($n) { Set-Content $CurrentFile $n -Encoding UTF8 }
+    function _GetCurrent { if (Test-Path $CurrentFile) { ([System.IO.File]::ReadAllText($CurrentFile)).Trim() } else { $null } }
+    function _SetCurrent($n) { [System.IO.File]::WriteAllText($CurrentFile, $n) }
 
     function _SaveAccount($n) {
         if (Test-Path $ClaudeConfig) {
@@ -104,19 +104,21 @@ function ccs {
 
                     $cred.claudeAiOauth.accessToken  = $resp.access_token
                     if ($resp.refresh_token) { $cred.claudeAiOauth.refreshToken = $resp.refresh_token }
-                    # expiresAt in ms: now + expires_in seconds
                     if ($resp.expires_in) {
                         $cred.claudeAiOauth.expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($resp.expires_in * 1000)
                     }
                     $cred | ConvertTo-Json -Depth 5 | Set-Content $credFile -Encoding UTF8
-                    # If this is the live account, also update the live credentials
                     if ($t.IsLive -and $credFile -ne $liveCred) {
                         $cred | ConvertTo-Json -Depth 5 | Set-Content $liveCred -Encoding UTF8
                     }
                     Write-Host "    OK" -f Green
                 } catch {
-                    Write-Host "    FAILED: $_" -f Red
+                    $errMsg = $null
+                    try { $errMsg = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message } catch {}
+                    if (!$errMsg) { $errMsg = $_.Exception.Message }
+                    Write-Host "    FAILED: $errMsg" -f Red
                 }
+                Start-Sleep -Seconds 2  # avoid rate limiting between accounts
             }
         }
         "schedule" {
@@ -180,21 +182,9 @@ function ccs {
             Write-Host "  Note: account backups in '$env:USERPROFILE\.claude-accounts\' were kept." -f DarkGray
             Write-Host "  Delete that folder manually if you no longer need them." -f DarkGray
         }
-        "" {
-            Write-Host ""
-            Write-Host "  ccs save <n>       Save current account"              -f Yellow
-            Write-Host "  ccs <n>            Switch to account"                 -f Yellow
-            Write-Host "  ccs list           List accounts"                     -f Yellow
-            Write-Host "  ccs status         Show current account"              -f Yellow
-            Write-Host "  ccs refresh        Refresh OAuth tokens for all accounts" -f Yellow
-            Write-Host "  ccs schedule       Register hourly auto-refresh task" -f Yellow
-            Write-Host "  ccs unschedule     Remove the auto-refresh task"      -f Yellow
-            Write-Host "  ccs delete <n>     Delete a saved account"            -f Yellow
-            Write-Host "  ccs uninstall      Uninstall ccs"                     -f Yellow
-            Write-Host ""
-        }
-        default {
-            $target = $Command
+        "switch" {
+            if (!$Name) { Write-Host "Usage: ccs switch <n>" -f Red; return }
+            $target = $Name
             if ((_GetCurrent) -eq $target) {
                 Write-Host "Already on '$target'" -f DarkGray
                 return
@@ -213,6 +203,22 @@ function ccs {
             }
             _SetCurrent $target
             Write-Host "Switched to '$target'" -f Green
+        }
+        "" {
+            Write-Host ""
+            Write-Host "  ccs save <n>       Save current account"              -f Yellow
+            Write-Host "  ccs switch <n>     Switch to account"                 -f Yellow
+            Write-Host "  ccs list           List accounts"                     -f Yellow
+            Write-Host "  ccs status         Show current account"              -f Yellow
+            Write-Host "  ccs refresh        Refresh OAuth tokens for all accounts" -f Yellow
+            Write-Host "  ccs schedule       Register hourly auto-refresh task" -f Yellow
+            Write-Host "  ccs unschedule     Remove the auto-refresh task"      -f Yellow
+            Write-Host "  ccs delete <n>     Delete a saved account"            -f Yellow
+            Write-Host "  ccs uninstall      Uninstall ccs"                     -f Yellow
+            Write-Host ""
+        }
+        default {
+            Write-Host "Unknown command: '$Command'. Run 'ccs' for usage." -f Red
         }
     }
 }

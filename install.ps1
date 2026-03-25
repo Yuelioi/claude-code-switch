@@ -65,7 +65,7 @@ Write-Host "CMD — open a new window, then use ccs directly." -ForegroundColor 
 Write-Host ""
 Write-Host "Usage:" -ForegroundColor DarkGray
 Write-Host "  ccs save <name>     Save current account" -ForegroundColor Yellow
-Write-Host "  ccs <name>          Switch account" -ForegroundColor Yellow
+Write-Host "  ccs switch <name>   Switch account" -ForegroundColor Yellow
 Write-Host "  ccs list            List accounts" -ForegroundColor Yellow
 Write-Host "  ccs status          Show current account" -ForegroundColor Yellow
 Write-Host "  ccs refresh         Refresh OAuth tokens for all accounts" -ForegroundColor Yellow

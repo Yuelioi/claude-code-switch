@@ -64,7 +64,7 @@ source ~/.bashrc  # or: source ~/.zshrc
 
 ```
 ccs save <name>      Save the current account
-ccs <name>           Switch to an account (auto-saves current first)
+ccs switch <name>    Switch to an account (auto-saves current first)
 ccs list             List all saved accounts
 ccs status           Show the current account
 ccs refresh          Refresh OAuth tokens for all saved accounts
@@ -88,8 +88,8 @@ clauded [args]
 ccs save work        # save current session as "work"
 ccs save personal    # save current session as "personal"
 
-ccs personal         # switch to personal (auto-saves work first)
-ccs work             # switch back to work
+ccs switch personal  # switch to personal (auto-saves work first)
+ccs switch work      # switch back to work
 
 ccs list             # list all accounts (* marks the current one)
 ccs status           # show current account
