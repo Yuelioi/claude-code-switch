@@ -62,11 +62,15 @@ source ~/.bashrc  # 或 source ~/.zshrc
 ## 用法
 
 ```
-ccs save <n>     保存当前登录的账号
-ccs <n>          切换到指定账号（自动保存当前状态）
-ccs list            列出所有已保存的账号
-ccs status          查看当前使用的账号
-ccs delete <n>   删除一个已保存的账号
+ccs save <name>      保存当前登录的账号
+ccs <name>           切换到指定账号（自动保存当前状态）
+ccs list             列出所有已保存的账号
+ccs status           查看当前使用的账号
+ccs refresh          刷新所有已保存账号的 OAuth token
+ccs schedule         注册每小时自动刷新任务（Windows 任务计划 / cron）
+ccs unschedule       取消自动刷新任务
+ccs delete <name>    删除一个已保存的账号
+ccs uninstall        卸载 ccs
 ```
 
 另附 `clauded`，等同于 `claude --dangerously-skip-permissions`：
@@ -93,17 +97,50 @@ ccs delete personal  # 删除 personal
 
 ---
 
+## Token 自动刷新
+
+Claude Code 的 OAuth token 会随时间过期。如果切换回长时间未使用的账号，备份里的 token 可能已失效，导致 `401` 认证错误。
+
+### 手动刷新
+
+```bash
+ccs refresh
+```
+
+直接向 `platform.claude.com/v1/oauth/token` 发起请求，用各账号的 refresh token 换取新 token，无需切换账号，就地更新所有备份中的凭据文件。
+
+### 自动刷新（推荐）
+
+注册后台定时任务，每小时自动执行一次 `ccs refresh`：
+
+```bash
+ccs schedule
+```
+
+取消定时任务：
+
+```bash
+ccs unschedule
+```
+
+| 平台                | 机制                                                               |
+| ------------------- | ------------------------------------------------------------------ |
+| Windows             | Windows 任务计划程序（任务名：`ClaudeCodeTokenRefresh`）         |
+| macOS / Linux / WSL | cron（`0 * * * *`），日志位于 `~/.claude-accounts/refresh.log` |
+
+---
+
 ## 工作原理
 
 账号数据保存在 `~/.claude-accounts/`（Windows：`%USERPROFILE%\.claude-accounts\`）：
 
-| 文件 | 说明 |
-|------|------|
-| `<n>.json` | `~/.claude.json` 的副本（登录 token） |
-| `<n>-dir/` | `~/.claude/` 目录的副本（配置、项目数据） |
-| `.current` | 当前活跃账号的名称 |
+| 文件 / 目录     | 说明                                              |
+| --------------- | ------------------------------------------------- |
+| `<name>.json` | `~/.claude.json` 的副本（账号元数据）           |
+| `<name>-dir/` | `~/.claude/` 目录的副本（配置、项目数据、凭据） |
+| `.current`    | 当前活跃账号的名称                                |
 
-`.current` 文件是可靠自动保存的关键。切换账号时，ccs 通过读取 `.current` 来知道要更新哪个备份——即使 token 在上次保存后已经刷新，也能正确工作。
+切换账号时，`ccs` 先读取 `.current` 确定要更新哪个备份，再恢复目标账号的文件。`~/.claude-accounts/<name>-dir/.credentials.json` 存储各账号的 OAuth token。
 
 ---
 
@@ -115,29 +152,21 @@ ccs delete personal  # 删除 personal
 ccs save <你的账号名>
 ```
 
-这会写入 `.current` 标记，之后一切正常工作。
-
 ---
 
 ## 卸载
 
-**Windows：**
-
-```powershell
-Remove-Item "$env:USERPROFILE\.claude-switch" -Recurse -Force
-# 再从 PowerShell Profile 中手动删除以下两行：
-#   # Claude Code Switch
-#   . "C:\Users\<you>\.claude-switch\ccs.ps1"
-# CMD 用户还需在系统环境变量中移除 .claude-switch 路径
+```bash
+ccs uninstall
 ```
 
-**macOS / Linux / WSL / Git Bash：**
+自动完成以下操作：取消定时任务（如已注册）、删除安装目录、从 Shell 配置文件中移除加载行。
+
+`~/.claude-accounts/` 中的账号备份**不会**被自动删除，如不再需要可手动删除(防止误操作)：
 
 ```bash
-rm -rf ~/.claude-switch
-# 再从 ~/.bashrc 或 ~/.zshrc 中删除以下两行：
-#   # Claude Code Switch
-#   . "/home/<you>/.claude-switch/ccs.sh"
+rm -rf ~/.claude-accounts        # macOS / Linux / WSL
+Remove-Item "$env:USERPROFILE\.claude-accounts" -Recurse -Force  # Windows
 ```
 
 ---

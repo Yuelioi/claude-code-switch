@@ -68,6 +68,10 @@ Write-Host "  ccs save <name>     Save current account" -ForegroundColor Yellow
 Write-Host "  ccs <name>          Switch account" -ForegroundColor Yellow
 Write-Host "  ccs list            List accounts" -ForegroundColor Yellow
 Write-Host "  ccs status          Show current account" -ForegroundColor Yellow
+Write-Host "  ccs refresh         Refresh OAuth tokens for all accounts" -ForegroundColor Yellow
+Write-Host "  ccs schedule        Register hourly auto-refresh task" -ForegroundColor Yellow
+Write-Host "  ccs unschedule      Remove the auto-refresh task" -ForegroundColor Yellow
 Write-Host "  ccs delete <name>   Delete a saved account" -ForegroundColor Yellow
+Write-Host "  ccs uninstall       Uninstall ccs" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  clauded             claude --dangerously-skip-permissions" -ForegroundColor Yellow

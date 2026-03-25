@@ -67,13 +67,130 @@ function ccs {
             if ((_GetCurrent) -eq $Name) { Remove-Item $CurrentFile -Force -EA SilentlyContinue }
             Write-Host "Deleted '$Name'" -f Green
         }
+        "refresh" {
+            $TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+            $CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+            $SCOPE     = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+            $cur       = _GetCurrent
+
+            # Collect credential files: all backups + live
+            $targets = @()
+            Get-ChildItem "$BackupDir\*-dir" -Directory -EA SilentlyContinue | ForEach-Object {
+                $acc = $_.Name -replace '-dir$', ''
+                $targets += @{ Name = $acc; CredFile = "$($_.FullName)\.credentials.json"; IsLive = ($acc -eq $cur) }
+            }
+            # Also refresh the live credentials directly (covers unsaved or current account)
+            $liveCred = "$ClaudeDir\.credentials.json"
+            if ((Test-Path $liveCred) -and -not ($targets | Where-Object { $_.IsLive })) {
+                $targets += @{ Name = "(live)"; CredFile = $liveCred; IsLive = $true }
+            }
+
+            if (!$targets) { Write-Host "No saved accounts found." -f Red; return }
+
+            foreach ($t in $targets) {
+                $credFile = $t.CredFile
+                if (!(Test-Path $credFile)) {
+                    Write-Host "  [$($t.Name)] no credentials file, skipping." -f DarkGray
+                    continue
+                }
+                $cred = Get-Content $credFile -Raw | ConvertFrom-Json
+                $rt   = $cred.claudeAiOauth.refreshToken
+                if (!$rt) { Write-Host "  [$($t.Name)] no refresh token, skipping." -f DarkGray; continue }
+
+                Write-Host "  Refreshing '$($t.Name)'..." -f Cyan
+                try {
+                    $body = @{ grant_type = "refresh_token"; refresh_token = $rt; client_id = $CLIENT_ID; scope = $SCOPE } | ConvertTo-Json
+                    $resp = Invoke-RestMethod -Uri $TOKEN_URL -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
+
+                    $cred.claudeAiOauth.accessToken  = $resp.access_token
+                    if ($resp.refresh_token) { $cred.claudeAiOauth.refreshToken = $resp.refresh_token }
+                    # expiresAt in ms: now + expires_in seconds
+                    if ($resp.expires_in) {
+                        $cred.claudeAiOauth.expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($resp.expires_in * 1000)
+                    }
+                    $cred | ConvertTo-Json -Depth 5 | Set-Content $credFile -Encoding UTF8
+                    # If this is the live account, also update the live credentials
+                    if ($t.IsLive -and $credFile -ne $liveCred) {
+                        $cred | ConvertTo-Json -Depth 5 | Set-Content $liveCred -Encoding UTF8
+                    }
+                    Write-Host "    OK" -f Green
+                } catch {
+                    Write-Host "    FAILED: $_" -f Red
+                }
+            }
+        }
+        "schedule" {
+            $TaskName  = "ClaudeCodeTokenRefresh"
+            $ScriptPath = "$env:USERPROFILE\.claude-switch\ccs.ps1"
+            if (Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue) {
+                Write-Host "Already scheduled (task: $TaskName)." -f Yellow; return
+            }
+            $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
+                -Argument "-NoProfile -WindowStyle Hidden -Command `". '$ScriptPath'; ccs refresh`""
+            $trigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -Once -At (Get-Date)
+            $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+            Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+            Write-Host "Scheduled: 'ccs refresh' will run every hour." -f Green
+            Write-Host "  Task name: $TaskName" -f DarkGray
+        }
+        "unschedule" {
+            $TaskName = "ClaudeCodeTokenRefresh"
+            if (Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue) {
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+                Write-Host "Schedule removed." -f Green
+            } else {
+                Write-Host "No schedule found (task: $TaskName)." -f Yellow
+            }
+        }
+        "uninstall" {
+            # 1. Remove scheduled task
+            $TaskName = "ClaudeCodeTokenRefresh"
+            if (Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue) {
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+                Write-Host "  Removed scheduled task." -f DarkGray
+            }
+
+            # 2. Remove install directory
+            $InstallDir = "$env:USERPROFILE\.claude-switch"
+            if (Test-Path $InstallDir) {
+                Remove-Item $InstallDir -Recurse -Force
+                Write-Host "  Removed $InstallDir" -f DarkGray
+            }
+
+            # 3. Remove dot-source line from PowerShell profile
+            $ProfileFile = $PROFILE.CurrentUserAllHosts
+            if (Test-Path $ProfileFile) {
+                $content = Get-Content $ProfileFile -Raw
+                $cleaned = $content -replace "`r?`n# Claude Code Switch`r?`n[^\n]*claude-switch[^\n]*", ""
+                if ($cleaned -ne $content) {
+                    Set-Content $ProfileFile $cleaned.TrimEnd() -Encoding UTF8
+                    Write-Host "  Removed entry from $ProfileFile" -f DarkGray
+                }
+            }
+
+            # 4. Remove install dir from user PATH (CMD support)
+            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($userPath -like "*\.claude-switch*") {
+                $newPath = ($userPath -split ";" | Where-Object { $_ -notlike "*\.claude-switch*" }) -join ";"
+                [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+                Write-Host "  Removed from user PATH." -f DarkGray
+            }
+
+            Write-Host "Uninstalled." -f Green
+            Write-Host "  Note: account backups in '$env:USERPROFILE\.claude-accounts\' were kept." -f DarkGray
+            Write-Host "  Delete that folder manually if you no longer need them." -f DarkGray
+        }
         "" {
             Write-Host ""
-            Write-Host "  ccs save <n>    Save current account" -f Yellow
-            Write-Host "  ccs <n>         Switch to account"    -f Yellow
-            Write-Host "  ccs list           List accounts"        -f Yellow
-            Write-Host "  ccs status         Show current account" -f Yellow
-            Write-Host "  ccs delete <n>  Delete a saved account" -f Yellow
+            Write-Host "  ccs save <n>       Save current account"              -f Yellow
+            Write-Host "  ccs <n>            Switch to account"                 -f Yellow
+            Write-Host "  ccs list           List accounts"                     -f Yellow
+            Write-Host "  ccs status         Show current account"              -f Yellow
+            Write-Host "  ccs refresh        Refresh OAuth tokens for all accounts" -f Yellow
+            Write-Host "  ccs schedule       Register hourly auto-refresh task" -f Yellow
+            Write-Host "  ccs unschedule     Remove the auto-refresh task"      -f Yellow
+            Write-Host "  ccs delete <n>     Delete a saved account"            -f Yellow
+            Write-Host "  ccs uninstall      Uninstall ccs"                     -f Yellow
             Write-Host ""
         }
         default {

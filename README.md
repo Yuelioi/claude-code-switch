@@ -63,11 +63,15 @@ source ~/.bashrc  # or: source ~/.zshrc
 ## Usage
 
 ```
-ccs save <n>     Save the current account
-ccs <n>          Switch to an account (auto-saves current)
-ccs list            List all saved accounts
-ccs status          Show the current account
-ccs delete <n>   Delete a saved account
+ccs save <name>      Save the current account
+ccs <name>           Switch to an account (auto-saves current first)
+ccs list             List all saved accounts
+ccs status           Show the current account
+ccs refresh          Refresh OAuth tokens for all saved accounts
+ccs schedule         Register hourly auto-refresh (Windows Task Scheduler / cron)
+ccs unschedule       Remove the auto-refresh schedule
+ccs delete <name>    Delete a saved account
+ccs uninstall        Uninstall ccs
 ```
 
 `clauded` is a shortcut for `claude --dangerously-skip-permissions`:
@@ -94,17 +98,50 @@ ccs delete personal  # delete personal
 
 ---
 
+## Token Auto-Refresh
+
+Claude Code uses OAuth tokens that expire over time. If you switch back to an account you haven't used in a while, the stored token may be expired, causing a `401` authentication error.
+
+### Manual refresh
+
+```bash
+ccs refresh
+```
+
+Calls `platform.claude.com/v1/oauth/token` directly with each account's refresh token — no account switching needed. Updates all backup credential files in place.
+
+### Automatic refresh (recommended)
+
+Register a background task that runs `ccs refresh` every hour:
+
+```bash
+ccs schedule
+```
+
+To stop it:
+
+```bash
+ccs unschedule
+```
+
+| Platform | Mechanism |
+|----------|-----------|
+| Windows  | Windows Task Scheduler (`ClaudeCodeTokenRefresh`) |
+| macOS / Linux / WSL | cron (`0 * * * *`), log at `~/.claude-accounts/refresh.log` |
+
+---
+
 ## How It Works
 
 Account data is stored in `~/.claude-accounts/` (Windows: `%USERPROFILE%\.claude-accounts\`):
 
-| File | Description |
-|------|-------------|
-| `<n>.json` | Copy of `~/.claude.json` (login token) |
-| `<n>-dir/` | Copy of `~/.claude/` directory (config & project data) |
+| File / Dir | Description |
+|------------|-------------|
+| `<name>.json` | Copy of `~/.claude.json` (account metadata) |
+| `<name>-dir/` | Copy of `~/.claude/` directory (config, project data, credentials) |
 | `.current` | Name of the currently active account |
 
-The `.current` file is the key to reliable auto-save. When switching accounts, ccs reads `.current` to know which backup to update — even if the token has been refreshed since the last save.
+When switching accounts, `ccs` reads `.current` to know which backup to update before restoring the target account's files. The `~/.claude/<name>-dir/.credentials.json` file holds the OAuth tokens for each account.
 
 ---
 
@@ -116,29 +153,21 @@ If you used a previous version (which used file-hash matching instead of `.curre
 ccs save <your-account-name>
 ```
 
-This writes the `.current` marker and everything will work correctly from then on.
-
 ---
 
 ## Uninstall
 
-**Windows:**
-
-```powershell
-Remove-Item "$env:USERPROFILE\.claude-switch" -Recurse -Force
-# Then remove these two lines from your PowerShell profile:
-#   # Claude Code Switch
-#   . "C:\Users\<you>\.claude-switch\ccs.ps1"
-# CMD users: also remove .claude-switch from the user PATH environment variable
+```bash
+ccs uninstall
 ```
 
-**macOS / Linux / WSL / Git Bash:**
+This removes the scheduled task (if any), the install directory, and the shell profile entry automatically.
+
+Account backups in `~/.claude-accounts/` are **not** removed — delete that directory manually if you no longer need the saved accounts.
 
 ```bash
-rm -rf ~/.claude-switch
-# Then remove these two lines from ~/.bashrc or ~/.zshrc:
-#   # Claude Code Switch
-#   . "/home/<you>/.claude-switch/ccs.sh"
+rm -rf ~/.claude-accounts        # macOS / Linux / WSL
+Remove-Item "$env:USERPROFILE\.claude-accounts" -Recurse -Force  # Windows
 ```
 
 ---

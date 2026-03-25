@@ -71,18 +71,145 @@ ccs() {
             [ -f "$tj" ] || { echo "Account '$name' not found."; return 1; }
             rm -f "$tj"
             rm -rf "$BACKUP_DIR/$name-dir"
-            # Clear marker if we deleted the active account
             local cur; cur=$(_get_current)
             [ "$cur" = "$name" ] && rm -f "$CURRENT_FILE"
             echo "Deleted '$name'"
             ;;
+        refresh)
+            local TOKEN_URL="https://platform.claude.com/v1/oauth/token"
+            local CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+            local SCOPE="user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+            local cur; cur=$(_get_current)
+            local live_cred="$CLAUDE_DIR/.credentials.json"
+            local refreshed_live=0
+
+            for acc_dir in "$BACKUP_DIR"/*-dir; do
+                [ -d "$acc_dir" ] || continue
+                local acc; acc=$(basename "$acc_dir" -dir)
+                local cred_file="$acc_dir/.credentials.json"
+                if [ ! -f "$cred_file" ]; then
+                    echo "  [$acc] no credentials file, skipping."
+                    continue
+                fi
+                local rt; rt=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['claudeAiOauth']['refreshToken'])" "$cred_file" 2>/dev/null)
+                if [ -z "$rt" ]; then echo "  [$acc] no refresh token, skipping."; continue; fi
+
+                echo "  Refreshing '$acc'..."
+                local resp; resp=$(curl -s -X POST "$TOKEN_URL" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$rt\",\"client_id\":\"$CLIENT_ID\",\"scope\":\"$SCOPE\"}")
+
+                if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
+                    echo "$resp" | python3 -c "
+import json, sys, time
+cred = json.load(open(sys.argv[1]))
+resp = json.load(sys.stdin)
+cred['claudeAiOauth']['accessToken'] = resp['access_token']
+if 'refresh_token' in resp:
+    cred['claudeAiOauth']['refreshToken'] = resp['refresh_token']
+if 'expires_in' in resp:
+    cred['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + resp['expires_in'] * 1000
+json.dump(cred, open(sys.argv[1], 'w'), indent=2)
+" "$cred_file"
+                    if [ "$acc" = "$cur" ]; then
+                        cp "$cred_file" "$live_cred"
+                        refreshed_live=1
+                    fi
+                    echo "    OK"
+                else
+                    local err; err=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_description', d.get('error','unknown')))" 2>/dev/null)
+                    echo "    FAILED: $err"
+                fi
+            done
+
+            # Refresh live credentials if not covered by any backup
+            if [ $refreshed_live -eq 0 ] && [ -f "$live_cred" ]; then
+                local rt; rt=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['claudeAiOauth']['refreshToken'])" "$live_cred" 2>/dev/null)
+                if [ -n "$rt" ]; then
+                    echo "  Refreshing '(live)'..."
+                    local resp; resp=$(curl -s -X POST "$TOKEN_URL" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$rt\",\"client_id\":\"$CLIENT_ID\",\"scope\":\"$SCOPE\"}")
+                    if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
+                        echo "$resp" | python3 -c "
+import json, sys, time
+cred = json.load(open(sys.argv[1]))
+resp = json.load(sys.stdin)
+cred['claudeAiOauth']['accessToken'] = resp['access_token']
+if 'refresh_token' in resp:
+    cred['claudeAiOauth']['refreshToken'] = resp['refresh_token']
+if 'expires_in' in resp:
+    cred['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + resp['expires_in'] * 1000
+json.dump(cred, open(sys.argv[1], 'w'), indent=2)
+" "$live_cred"
+                        echo "    OK"
+                    fi
+                fi
+            fi
+            ;;
+        schedule)
+            local SCRIPT="$HOME/.claude-switch/ccs.sh"
+            local CRON_TAG="# ccs auto-refresh"
+            local CRON_CMD="0 * * * * bash -c \". \\\"$SCRIPT\\\" && ccs refresh\" >> \"$HOME/.claude-accounts/refresh.log\" 2>&1  $CRON_TAG"
+            if crontab -l 2>/dev/null | grep -qF "$CRON_TAG"; then
+                echo "Already scheduled."
+            else
+                (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
+                echo "Scheduled: 'ccs refresh' runs every hour."
+                echo "  Log: $HOME/.claude-accounts/refresh.log"
+            fi
+            ;;
+        unschedule)
+            local CRON_TAG="# ccs auto-refresh"
+            if crontab -l 2>/dev/null | grep -qF "$CRON_TAG"; then
+                crontab -l | grep -vF "$CRON_TAG" | crontab -
+                echo "Schedule removed."
+            else
+                echo "No schedule found."
+            fi
+            ;;
+        uninstall)
+            local INSTALL_DIR="$HOME/.claude-switch"
+
+            # 1. Remove cron job
+            local CRON_TAG="# ccs auto-refresh"
+            if crontab -l 2>/dev/null | grep -qF "$CRON_TAG"; then
+                crontab -l | grep -vF "$CRON_TAG" | crontab -
+                echo "  Removed cron job."
+            fi
+
+            # 2. Remove source line from rc files
+            for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile"; do
+                [ -f "$rc" ] || continue
+                if grep -qF "$INSTALL_DIR" "$rc" 2>/dev/null; then
+                    # Remove the "# Claude Code Switch" comment line and the source line below it
+                    sed -i.bak "/# Claude Code Switch/{N;/claude-switch/d}" "$rc" 2>/dev/null || \
+                    grep -vF "$INSTALL_DIR" "$rc" > "$rc.tmp" && mv "$rc.tmp" "$rc"
+                    echo "  Removed entry from $rc"
+                fi
+            done
+
+            # 3. Remove install directory (do this last — script may be running from it)
+            if [ -d "$INSTALL_DIR" ]; then
+                rm -rf "$INSTALL_DIR"
+                echo "  Removed $INSTALL_DIR"
+            fi
+
+            echo "Uninstalled."
+            echo "  Note: account backups in '$HOME/.claude-accounts/' were kept."
+            echo "  Delete that folder manually if you no longer need them."
+            ;;
         "")
             echo ""
-            echo "  ccs save <n>    Save current account"
-            echo "  ccs <n>         Switch to account"
+            echo "  ccs save <n>       Save current account"
+            echo "  ccs <n>            Switch to account"
             echo "  ccs list           List accounts"
             echo "  ccs status         Show current account"
-            echo "  ccs delete <n>  Delete a saved account"
+            echo "  ccs refresh        Refresh OAuth tokens for all accounts"
+            echo "  ccs schedule       Register hourly auto-refresh (cron)"
+            echo "  ccs unschedule     Remove the auto-refresh cron job"
+            echo "  ccs delete <n>     Delete a saved account"
+            echo "  ccs uninstall      Uninstall ccs"
             echo ""
             ;;
         *)
