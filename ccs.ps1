@@ -14,15 +14,26 @@ function ccs {
     function _GetCurrent { if (Test-Path $CurrentFile) { ([System.IO.File]::ReadAllText($CurrentFile)).Trim() } else { $null } }
     function _SetCurrent($n) { [System.IO.File]::WriteAllText($CurrentFile, $n) }
 
+    # Save credentials + identity fields only (~1 KB per account)
     function _SaveAccount($n) {
+        $credSrc = "$ClaudeDir\.credentials.json"
+        if (-not (Test-Path $credSrc)) { Write-Host "  no credentials file, nothing to save" -f DarkGray; return }
+        $creds = Get-Content $credSrc -Raw | ConvertFrom-Json
+        $oauthAccount = $null
+        $userID = $null
         if (Test-Path $ClaudeConfig) {
-            Copy-Item $ClaudeConfig "$BackupDir\$n.json" -Force
+            try {
+                $config = Get-Content $ClaudeConfig -Raw | ConvertFrom-Json
+                $oauthAccount = $config.oauthAccount
+                $userID       = $config.userID
+            } catch {}
         }
-        if (Test-Path $ClaudeDir) {
-            $d = "$BackupDir\$n-dir"
-            if (Test-Path $d) { Remove-Item $d -Recurse -Force }
-            Copy-Item $ClaudeDir $d -Recurse -Force
+        $out = [ordered]@{
+            credentials  = $creds
+            oauthAccount = $oauthAccount
+            userID       = $userID
         }
+        $out | ConvertTo-Json -Depth 20 | Set-Content "$BackupDir\$n.creds.json" -Encoding UTF8
     }
 
     function _AutoSave {
@@ -44,10 +55,10 @@ function ccs {
         "list" {
             $cur = _GetCurrent
             Write-Host "Saved accounts:" -f Cyan
-            $files = Get-ChildItem "$BackupDir\*.json" -EA SilentlyContinue
+            $files = Get-ChildItem "$BackupDir\*.creds.json" -EA SilentlyContinue
             if (!$files) { Write-Host "  (none)" -f DarkGray; return }
             foreach ($f in $files) {
-                $n = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+                $n = $f.Name -replace '\.creds\.json$', ''
                 if ($n -eq $cur) { Write-Host "  * $n (current)" -f Green }
                 else              { Write-Host "  - $n" }
             }
@@ -59,11 +70,9 @@ function ccs {
         }
         "delete" {
             if (!$Name) { Write-Host "Usage: ccs delete <n>" -f Red; return }
-            $tj = "$BackupDir\$Name.json"
-            if (!(Test-Path $tj)) { Write-Host "Account '$Name' not found." -f Red; return }
-            Remove-Item $tj -Force
-            $td = "$BackupDir\$Name-dir"
-            if (Test-Path $td) { Remove-Item $td -Recurse -Force }
+            $f = "$BackupDir\$Name.creds.json"
+            if (!(Test-Path $f)) { Write-Host "Account '$Name' not found." -f Red; return }
+            Remove-Item $f -Force
             if ((_GetCurrent) -eq $Name) { Remove-Item $CurrentFile -Force -EA SilentlyContinue }
             Write-Host "Deleted '$Name'" -f Green
         }
@@ -72,44 +81,31 @@ function ccs {
             $CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
             $SCOPE     = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
             $cur       = _GetCurrent
+            $liveCred  = "$ClaudeDir\.credentials.json"
+            $refreshedLive = $false
 
-            # Collect credential files: all backups + live
-            $targets = @()
-            Get-ChildItem "$BackupDir\*-dir" -Directory -EA SilentlyContinue | ForEach-Object {
-                $acc = $_.Name -replace '-dir$', ''
-                $targets += @{ Name = $acc; CredFile = "$($_.FullName)\.credentials.json"; IsLive = ($acc -eq $cur) }
-            }
-            # Also refresh the live credentials directly (covers unsaved or current account)
-            $liveCred = "$ClaudeDir\.credentials.json"
-            if ((Test-Path $liveCred) -and -not ($targets | Where-Object { $_.IsLive })) {
-                $targets += @{ Name = "(live)"; CredFile = $liveCred; IsLive = $true }
-            }
+            $files = Get-ChildItem "$BackupDir\*.creds.json" -EA SilentlyContinue
 
-            if (!$targets) { Write-Host "No saved accounts found." -f Red; return }
+            foreach ($f in $files) {
+                $acc  = $f.Name -replace '\.creds\.json$', ''
+                $data = Get-Content $f.FullName -Raw | ConvertFrom-Json
+                $rt   = $data.credentials.claudeAiOauth.refreshToken
+                if (!$rt) { Write-Host "  [$acc] no refresh token, skipping." -f DarkGray; continue }
 
-            foreach ($t in $targets) {
-                $credFile = $t.CredFile
-                if (!(Test-Path $credFile)) {
-                    Write-Host "  [$($t.Name)] no credentials file, skipping." -f DarkGray
-                    continue
-                }
-                $cred = Get-Content $credFile -Raw | ConvertFrom-Json
-                $rt   = $cred.claudeAiOauth.refreshToken
-                if (!$rt) { Write-Host "  [$($t.Name)] no refresh token, skipping." -f DarkGray; continue }
-
-                Write-Host "  Refreshing '$($t.Name)'..." -f Cyan
+                Write-Host "  Refreshing '$acc'..." -f Cyan
                 try {
                     $body = @{ grant_type = "refresh_token"; refresh_token = $rt; client_id = $CLIENT_ID; scope = $SCOPE } | ConvertTo-Json
                     $resp = Invoke-RestMethod -Uri $TOKEN_URL -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
 
-                    $cred.claudeAiOauth.accessToken  = $resp.access_token
-                    if ($resp.refresh_token) { $cred.claudeAiOauth.refreshToken = $resp.refresh_token }
+                    $data.credentials.claudeAiOauth.accessToken = $resp.access_token
+                    if ($resp.refresh_token) { $data.credentials.claudeAiOauth.refreshToken = $resp.refresh_token }
                     if ($resp.expires_in) {
-                        $cred.claudeAiOauth.expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($resp.expires_in * 1000)
+                        $data.credentials.claudeAiOauth.expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($resp.expires_in * 1000)
                     }
-                    $cred | ConvertTo-Json -Depth 5 | Set-Content $credFile -Encoding UTF8
-                    if ($t.IsLive -and $credFile -ne $liveCred) {
-                        $cred | ConvertTo-Json -Depth 5 | Set-Content $liveCred -Encoding UTF8
+                    $data | ConvertTo-Json -Depth 20 | Set-Content $f.FullName -Encoding UTF8
+                    if ($acc -eq $cur) {
+                        $data.credentials | ConvertTo-Json -Depth 20 | Set-Content $liveCred -Encoding UTF8
+                        $refreshedLive = $true
                     }
                     Write-Host "    OK" -f Green
                 } catch {
@@ -119,6 +115,31 @@ function ccs {
                     Write-Host "    FAILED: $errMsg" -f Red
                 }
                 Start-Sleep -Seconds 2  # avoid rate limiting between accounts
+            }
+
+            # Refresh live credentials if not covered by any backup
+            if (-not $refreshedLive -and (Test-Path $liveCred)) {
+                $cred = Get-Content $liveCred -Raw | ConvertFrom-Json
+                $rt   = $cred.claudeAiOauth.refreshToken
+                if ($rt) {
+                    Write-Host "  Refreshing '(live)'..." -f Cyan
+                    try {
+                        $body = @{ grant_type = "refresh_token"; refresh_token = $rt; client_id = $CLIENT_ID; scope = $SCOPE } | ConvertTo-Json
+                        $resp = Invoke-RestMethod -Uri $TOKEN_URL -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
+                        $cred.claudeAiOauth.accessToken = $resp.access_token
+                        if ($resp.refresh_token) { $cred.claudeAiOauth.refreshToken = $resp.refresh_token }
+                        if ($resp.expires_in) {
+                            $cred.claudeAiOauth.expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($resp.expires_in * 1000)
+                        }
+                        $cred | ConvertTo-Json -Depth 20 | Set-Content $liveCred -Encoding UTF8
+                        Write-Host "    OK" -f Green
+                    } catch {
+                        $errMsg = $null
+                        try { $errMsg = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message } catch {}
+                        if (!$errMsg) { $errMsg = $_.Exception.Message }
+                        Write-Host "    FAILED: $errMsg" -f Red
+                    }
+                }
             }
         }
         "schedule" {
@@ -182,6 +203,24 @@ function ccs {
             Write-Host "  Note: account backups in '$env:USERPROFILE\.claude-accounts\' were kept." -f DarkGray
             Write-Host "  Delete that folder manually if you no longer need them." -f DarkGray
         }
+        "login" {
+            if (!$Name) { Write-Host "Usage: ccs login <n>" -f Red; return }
+            if (-not (Get-Command claude -EA SilentlyContinue)) {
+                Write-Host "Error: 'claude' CLI not found in PATH." -f Red; return
+            }
+            _AutoSave   # flush current state before login overwrites .credentials.json
+            Write-Host "Starting Claude Code login flow..." -f Cyan
+            & claude auth login
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Login failed or cancelled." -f Red; return
+            }
+            if (-not (Test-Path "$ClaudeDir\.credentials.json")) {
+                Write-Host "Login completed but no credentials file was written." -f Red; return
+            }
+            _SaveAccount $Name
+            _SetCurrent $Name
+            Write-Host "Logged in as '$Name'" -f Green
+        }
         "switch" {
             if (!$Name) { Write-Host "Usage: ccs switch <n>" -f Red; return }
             $target = $Name
@@ -190,22 +229,44 @@ function ccs {
                 return
             }
             Write-Host "Switching to '$target'..." -f Cyan
-            $tj = "$BackupDir\$target.json"
-            if (!(Test-Path $tj)) { Write-Host "Account '$target' not found. Run: ccs save $target" -f Red; return }
+            $f = "$BackupDir\$target.creds.json"
+            if (!(Test-Path $f)) { Write-Host "Account '$target' not found. Run: ccs save $target" -f Red; return }
 
             _AutoSave   # flush live state → current account's backup
 
-            Copy-Item $tj $ClaudeConfig -Force
-            $td = "$BackupDir\$target-dir"
-            if (Test-Path $td) {
-                if (Test-Path $ClaudeDir) { Remove-Item $ClaudeDir -Recurse -Force }
-                Copy-Item $td $ClaudeDir -Recurse -Force
+            if (-not (Test-Path $ClaudeDir)) { New-Item -ItemType Directory -Path $ClaudeDir | Out-Null }
+
+            $data = Get-Content $f -Raw | ConvertFrom-Json
+
+            # Write live credentials
+            $data.credentials | ConvertTo-Json -Depth 20 | Set-Content "$ClaudeDir\.credentials.json" -Encoding UTF8
+
+            # Merge identity fields into live .claude.json, preserving everything else
+            $config = $null
+            if (Test-Path $ClaudeConfig) {
+                try { $config = Get-Content $ClaudeConfig -Raw | ConvertFrom-Json } catch {}
             }
+            if (-not $config) { $config = New-Object PSObject }
+
+            function _SetProp($obj, $name, $value) {
+                if ($null -eq $value) { return }
+                if ($obj.PSObject.Properties.Name -contains $name) {
+                    $obj.$name = $value
+                } else {
+                    $obj | Add-Member -MemberType NoteProperty -Name $name -Value $value
+                }
+            }
+            _SetProp $config 'oauthAccount' $data.oauthAccount
+            _SetProp $config 'userID'       $data.userID
+
+            $config | ConvertTo-Json -Depth 100 | Set-Content $ClaudeConfig -Encoding UTF8
+
             _SetCurrent $target
             Write-Host "Switched to '$target'" -f Green
         }
         "" {
             Write-Host ""
+            Write-Host "  ccs login <n>      Log in via 'claude auth login' and save as <n>" -f Yellow
             Write-Host "  ccs save <n>       Save current account"              -f Yellow
             Write-Host "  ccs switch <n>     Switch to account"                 -f Yellow
             Write-Host "  ccs list           List accounts"                     -f Yellow

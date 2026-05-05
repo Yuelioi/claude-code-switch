@@ -62,6 +62,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 ## 用法
 
 ```
+ccs login <name>     调用 `claude auth login` 走完登录流程后保存为 <name>
 ccs save <name>      保存当前登录的账号
 ccs switch <name>    切换到指定账号（自动保存当前状态）
 ccs list             列出所有已保存的账号
@@ -84,8 +85,8 @@ clauded [args]
 ## 示例
 
 ```bash
-ccs save work        # 保存当前账号为 work
-ccs save personal    # 保存当前账号为 personal
+ccs login work       # 调用 `claude auth login` 登录后保存为 work
+ccs login personal   # 登录另一个账号并保存为 personal
 
 ccs switch personal  # 切换到 personal（自动保存 work 的状态）
 ccs switch work      # 切换回 work
@@ -94,6 +95,8 @@ ccs list             # 列出所有账号（* 标记当前账号）
 ccs status           # 查看当前账号
 ccs delete personal  # 删除 personal
 ```
+
+如果你已经通过 `claude auth login` 直接登录、想把当前会话标记为某个名字，仍可使用 `ccs save <name>`。
 
 ---
 
@@ -134,23 +137,25 @@ ccs unschedule
 
 账号数据保存在 `~/.claude-accounts/`（Windows：`%USERPROFILE%\.claude-accounts\`）：
 
-| 文件 / 目录     | 说明                                              |
-| --------------- | ------------------------------------------------- |
-| `<name>.json` | `~/.claude.json` 的副本（账号元数据）           |
-| `<name>-dir/` | `~/.claude/` 目录的副本（配置、项目数据、凭据） |
-| `.current`    | 当前活跃账号的名称                                |
+| 文件                  | 说明                                                                     |
+| --------------------- | ------------------------------------------------------------------------ |
+| `<name>.creds.json` | OAuth 凭证 + 身份字段（`oauthAccount`、`userID`），每个账号约 1 KB |
+| `.current`          | 当前活跃账号的名称                                                       |
 
-切换账号时，`ccs` 先读取 `.current` 确定要更新哪个备份，再恢复目标账号的文件。`~/.claude-accounts/<name>-dir/.credentials.json` 存储各账号的 OAuth token。
+`ccs` 只保存切换账号所必需的内容：`.credentials.json` 的内容加上 `~/.claude.json` 中的两个身份字段。项目数据、会话历史等本地状态仍然留在 `~/.claude/`，被所有账号共享。切换时 `ccs` 把新的凭证写入 `~/.claude/.credentials.json`，并把身份字段合并进 `~/.claude.json`，其余字段保持不变。
 
 ---
 
 ## 从旧版本升级
 
-如果你使用的是旧版本（通过文件哈希匹配来识别当前账号），升级后需要执行一次重新保存：
+本次更新调整了存储格式：现在每个账号只保存约 1 KB 的凭证，不再复制整个 `~/.claude/` 目录（动辄几百 MB）。**新版本不再读取旧格式数据。** 如果你从使用 `<name>.json` + `<name>-dir/` 的旧版本升级，请先清理：
 
 ```bash
-ccs save <你的账号名>
+rm -rf ~/.claude-accounts        # macOS / Linux / WSL / Git Bash
+Remove-Item "$env:USERPROFILE\.claude-accounts" -Recurse -Force  # Windows
 ```
+
+然后对每个想保留的账号在 Claude Code 中重新登录后执行 `ccs save <账号名>`。
 
 ---
 

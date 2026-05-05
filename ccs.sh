@@ -14,16 +14,46 @@ ccs() {
 
     mkdir -p "$BACKUP_DIR"
 
+    # Detect a working Python interpreter. On Windows, `python3` may be a
+    # Microsoft Store redirector stub that exits non-zero without running.
+    local PY=""
+    for cand in python3 python py; do
+        command -v "$cand" >/dev/null 2>&1 || continue
+        if [ "$cand" = "py" ]; then
+            "$cand" -3 -c "print(1)" >/dev/null 2>&1 && PY="py -3" && break
+        else
+            "$cand" -c "print(1)" >/dev/null 2>&1 && PY="$cand" && break
+        fi
+    done
+    if [ -z "$PY" ]; then
+        echo "Error: no working Python interpreter found (tried python3, python, py)."
+        return 1
+    fi
+
     _get_current() { [ -f "$CURRENT_FILE" ] && cat "$CURRENT_FILE" | tr -d '[:space:]' || echo ""; }
     _set_current() { echo "$1" > "$CURRENT_FILE"; }
 
+    # Save credentials + identity fields only (~1 KB per account)
     _save_account() {
         local n="$1"
-        [ -f "$CLAUDE_CONFIG" ] && cp "$CLAUDE_CONFIG" "$BACKUP_DIR/$n.json"
-        if [ -d "$CLAUDE_DIR" ]; then
-            rm -rf "$BACKUP_DIR/$n-dir"
-            cp -r "$CLAUDE_DIR" "$BACKUP_DIR/$n-dir"
-        fi
+        local cred_src="$CLAUDE_DIR/.credentials.json"
+        local out="$BACKUP_DIR/$n.creds.json"
+        [ -f "$cred_src" ] || { echo "  no credentials file, nothing to save"; return 1; }
+        $PY - "$cred_src" "$CLAUDE_CONFIG" "$out" <<'PYEOF'
+import json, sys
+creds = json.load(open(sys.argv[1], encoding="utf-8"))
+config = {}
+try:
+    config = json.load(open(sys.argv[2], encoding="utf-8"))
+except (FileNotFoundError, json.JSONDecodeError):
+    pass
+out = {
+    "credentials": creds,
+    "oauthAccount": config.get("oauthAccount"),
+    "userID": config.get("userID"),
+}
+json.dump(out, open(sys.argv[3], "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PYEOF
     }
 
     _autosave() {
@@ -45,9 +75,9 @@ ccs() {
             local cur; cur=$(_get_current)
             echo "Saved accounts:"
             local found=0
-            for f in "$BACKUP_DIR"/*.json; do
+            for f in "$BACKUP_DIR"/*.creds.json; do
                 [ -f "$f" ] || continue
-                local n; n=$(basename "$f" .json)
+                local n; n=$(basename "$f" .creds.json)
                 if [ "$n" = "$cur" ]; then
                     echo "  * $n (current)"
                 else
@@ -67,10 +97,9 @@ ccs() {
             ;;
         delete)
             [ -z "$name" ] && echo "Usage: ccs delete <n>" && return 1
-            local tj="$BACKUP_DIR/$name.json"
-            [ -f "$tj" ] || { echo "Account '$name' not found."; return 1; }
-            rm -f "$tj"
-            rm -rf "$BACKUP_DIR/$name-dir"
+            local f="$BACKUP_DIR/$name.creds.json"
+            [ -f "$f" ] || { echo "Account '$name' not found."; return 1; }
+            rm -f "$f"
             local cur; cur=$(_get_current)
             [ "$cur" = "$name" ] && rm -f "$CURRENT_FILE"
             echo "Deleted '$name'"
@@ -83,15 +112,16 @@ ccs() {
             local live_cred="$CLAUDE_DIR/.credentials.json"
             local refreshed_live=0
 
-            for acc_dir in "$BACKUP_DIR"/*-dir; do
-                [ -d "$acc_dir" ] || continue
-                local acc; acc=$(basename "$acc_dir" -dir)
-                local cred_file="$acc_dir/.credentials.json"
-                if [ ! -f "$cred_file" ]; then
-                    echo "  [$acc] no credentials file, skipping."
-                    continue
-                fi
-                local rt; rt=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['claudeAiOauth']['refreshToken'])" "$cred_file" 2>/dev/null)
+            for f in "$BACKUP_DIR"/*.creds.json; do
+                [ -f "$f" ] || continue
+                local acc; acc=$(basename "$f" .creds.json)
+                local rt
+                rt=$($PY - "$f" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print(d["credentials"]["claudeAiOauth"]["refreshToken"])
+PYEOF
+)
                 if [ -z "$rt" ]; then echo "  [$acc] no refresh token, skipping."; continue; fi
 
                 echo "  Refreshing '$acc'..."
@@ -99,49 +129,52 @@ ccs() {
                     -H "Content-Type: application/json" \
                     -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$rt\",\"client_id\":\"$CLIENT_ID\",\"scope\":\"$SCOPE\"}")
 
-                if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
-                    echo "$resp" | python3 -c "
+                if echo "$resp" | $PY -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
+                    local sync_live=0
+                    [ "$acc" = "$cur" ] && sync_live=1
+                    echo "$resp" | $PY - "$f" "$live_cred" "$sync_live" <<'PYEOF'
 import json, sys, time
-cred = json.load(open(sys.argv[1]))
+path, live_cred, sync_live = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+data = json.load(open(path, encoding="utf-8"))
 resp = json.load(sys.stdin)
-cred['claudeAiOauth']['accessToken'] = resp['access_token']
-if 'refresh_token' in resp:
-    cred['claudeAiOauth']['refreshToken'] = resp['refresh_token']
-if 'expires_in' in resp:
-    cred['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + resp['expires_in'] * 1000
-json.dump(cred, open(sys.argv[1], 'w'), indent=2)
-" "$cred_file"
-                    if [ "$acc" = "$cur" ]; then
-                        cp "$cred_file" "$live_cred"
-                        refreshed_live=1
-                    fi
+target = data["credentials"]
+target["claudeAiOauth"]["accessToken"] = resp["access_token"]
+if "refresh_token" in resp:
+    target["claudeAiOauth"]["refreshToken"] = resp["refresh_token"]
+if "expires_in" in resp:
+    target["claudeAiOauth"]["expiresAt"] = int(time.time() * 1000) + resp["expires_in"] * 1000
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+if sync_live:
+    json.dump(data["credentials"], open(live_cred, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PYEOF
+                    [ "$acc" = "$cur" ] && refreshed_live=1
                     echo "    OK"
                 else
-                    local err; err=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error',{}); print(e.get('message',e) if isinstance(e,dict) else e)" 2>/dev/null)
+                    local err; err=$(echo "$resp" | $PY -c "import json,sys; d=json.load(sys.stdin); e=d.get('error',{}); print(e.get('message',e) if isinstance(e,dict) else e)" 2>/dev/null)
                     echo "    FAILED: $err"
                 fi
-                sleep 2  # avoid rate limiting between accounts
+                sleep 2
             done
 
             # Refresh live credentials if not covered by any backup
             if [ $refreshed_live -eq 0 ] && [ -f "$live_cred" ]; then
-                local rt; rt=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['claudeAiOauth']['refreshToken'])" "$live_cred" 2>/dev/null)
+                local rt; rt=$($PY -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(d['claudeAiOauth']['refreshToken'])" "$live_cred" 2>/dev/null)
                 if [ -n "$rt" ]; then
                     echo "  Refreshing '(live)'..."
                     local resp; resp=$(curl -s -X POST "$TOKEN_URL" \
                         -H "Content-Type: application/json" \
                         -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$rt\",\"client_id\":\"$CLIENT_ID\",\"scope\":\"$SCOPE\"}")
-                    if echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
-                        echo "$resp" | python3 -c "
+                    if echo "$resp" | $PY -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'access_token' in d else 1)" 2>/dev/null; then
+                        echo "$resp" | $PY -c "
 import json, sys, time
-cred = json.load(open(sys.argv[1]))
+cred = json.load(open(sys.argv[1], encoding='utf-8'))
 resp = json.load(sys.stdin)
 cred['claudeAiOauth']['accessToken'] = resp['access_token']
 if 'refresh_token' in resp:
     cred['claudeAiOauth']['refreshToken'] = resp['refresh_token']
 if 'expires_in' in resp:
     cred['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + resp['expires_in'] * 1000
-json.dump(cred, open(sys.argv[1], 'w'), indent=2)
+json.dump(cred, open(sys.argv[1], 'w', encoding='utf-8'), indent=2, ensure_ascii=False)
 " "$live_cred"
                         echo "    OK"
                     fi
@@ -200,6 +233,21 @@ json.dump(cred, open(sys.argv[1], 'w'), indent=2)
             echo "  Note: account backups in '$HOME/.claude-accounts/' were kept."
             echo "  Delete that folder manually if you no longer need them."
             ;;
+        login)
+            [ -z "$name" ] && echo "Usage: ccs login <n>" && return 1
+            command -v claude >/dev/null 2>&1 || { echo "Error: 'claude' CLI not found in PATH."; return 1; }
+            _autosave   # flush current state before login overwrites .credentials.json
+            echo "Starting Claude Code login flow..."
+            if claude auth login; then
+                [ -f "$CLAUDE_DIR/.credentials.json" ] || { echo "Login completed but no credentials file was written."; return 1; }
+                _save_account "$name"
+                _set_current "$name"
+                echo "Logged in as '$name'"
+            else
+                echo "Login failed or cancelled."
+                return 1
+            fi
+            ;;
         switch)
             [ -z "$name" ] && echo "Usage: ccs switch <n>" && return 1
             local target="$name"
@@ -209,22 +257,41 @@ json.dump(cred, open(sys.argv[1], 'w'), indent=2)
                 return 0
             fi
             echo "Switching to '$target'..."
-            local tj="$BACKUP_DIR/$target.json"
-            [ -f "$tj" ] || { echo "Account '$target' not found. Run: ccs save $target"; return 1; }
+            local f="$BACKUP_DIR/$target.creds.json"
+            [ -f "$f" ] || { echo "Account '$target' not found. Run: ccs save $target"; return 1; }
 
             _autosave   # flush live state → current account's backup
 
-            cp "$tj" "$CLAUDE_CONFIG"
-            local td="$BACKUP_DIR/$target-dir"
-            if [ -d "$td" ]; then
-                rm -rf "$CLAUDE_DIR"
-                cp -r "$td" "$CLAUDE_DIR"
-            fi
+            mkdir -p "$CLAUDE_DIR"
+            $PY - "$f" "$CLAUDE_DIR/.credentials.json" "$CLAUDE_CONFIG" <<'PYEOF'
+import json, sys, os
+src, live_creds, live_config = sys.argv[1:4]
+data = json.load(open(src, encoding="utf-8"))
+creds = data["credentials"]
+oauth_account = data.get("oauthAccount")
+user_id = data.get("userID")
+
+json.dump(creds, open(live_creds, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+
+# Merge identity fields into live .claude.json, preserving everything else
+config = {}
+if os.path.exists(live_config):
+    try:
+        config = json.load(open(live_config, encoding="utf-8"))
+    except json.JSONDecodeError:
+        pass
+if oauth_account is not None:
+    config["oauthAccount"] = oauth_account
+if user_id is not None:
+    config["userID"] = user_id
+json.dump(config, open(live_config, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PYEOF
             _set_current "$target"
             echo "Switched to '$target'"
             ;;
         "")
             echo ""
+            echo "  ccs login <n>      Log in via 'claude auth login' and save as <n>"
             echo "  ccs save <n>       Save current account"
             echo "  ccs switch <n>     Switch to account"
             echo "  ccs list           List accounts"

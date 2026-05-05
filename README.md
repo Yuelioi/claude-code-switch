@@ -63,6 +63,7 @@ source ~/.bashrc  # or: source ~/.zshrc
 ## Usage
 
 ```
+ccs login <name>     Run `claude auth login` and save the new credentials as <name>
 ccs save <name>      Save the current account
 ccs switch <name>    Switch to an account (auto-saves current first)
 ccs list             List all saved accounts
@@ -85,8 +86,8 @@ clauded [args]
 ## Example
 
 ```bash
-ccs save work        # save current session as "work"
-ccs save personal    # save current session as "personal"
+ccs login work       # run `claude auth login` and save the result as "work"
+ccs login personal   # log in as another account and save as "personal"
 
 ccs switch personal  # switch to personal (auto-saves work first)
 ccs switch work      # switch back to work
@@ -95,6 +96,8 @@ ccs list             # list all accounts (* marks the current one)
 ccs status           # show current account
 ccs delete personal  # delete personal
 ```
+
+`ccs save <name>` is also available if you've already logged in via `claude auth login` directly and want to capture the active session under a name.
 
 ---
 
@@ -135,23 +138,25 @@ ccs unschedule
 
 Account data is stored in `~/.claude-accounts/` (Windows: `%USERPROFILE%\.claude-accounts\`):
 
-| File / Dir | Description |
-|------------|-------------|
-| `<name>.json` | Copy of `~/.claude.json` (account metadata) |
-| `<name>-dir/` | Copy of `~/.claude/` directory (config, project data, credentials) |
+| File | Description |
+|------|-------------|
+| `<name>.creds.json` | OAuth credentials + identity fields (`oauthAccount`, `userID`) — about 1 KB per account |
 | `.current` | Name of the currently active account |
 
-When switching accounts, `ccs` reads `.current` to know which backup to update before restoring the target account's files. The `~/.claude/<name>-dir/.credentials.json` file holds the OAuth tokens for each account.
+`ccs` only persists what's needed to authenticate as a different account: the `.credentials.json` payload plus the two identity fields from `~/.claude.json`. Project data, conversation history, and other local state stay in `~/.claude/` and are shared across accounts. When switching, `ccs` writes the new credentials to `~/.claude/.credentials.json` and merges the identity fields into `~/.claude.json` — everything else is left untouched.
 
 ---
 
 ## Upgrading from an older version
 
-If you used a previous version (which used file-hash matching instead of `.current`), run a one-time re-save after upgrading:
+The storage format changed in this release: only credentials are saved now (~1 KB per account), instead of the entire `~/.claude/` directory (~hundreds of MB). **The new version does not read the old format.** If you're upgrading from a version that used `<name>.json` + `<name>-dir/`:
 
 ```bash
-ccs save <your-account-name>
+rm -rf ~/.claude-accounts        # macOS / Linux / WSL / Git Bash
+Remove-Item "$env:USERPROFILE\.claude-accounts" -Recurse -Force  # Windows
 ```
+
+Then run `ccs save <name>` for each account you want to keep (you'll need to log in to each one in Claude Code first).
 
 ---
 
